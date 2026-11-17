@@ -32,6 +32,17 @@ export const FORMULA_OPTIONS: FormulaDefinition[] = [
   { id: 'custom', label: 'Custom Math Formula', description: 'Custom expression using bytes A, B, C, D', byteCount: 2 },
 ];
 
+/** Old default commands that never worked on a real B58 (no header + unverified DID). id -> old command */
+const LEGACY_DEFAULT_COMMANDS: Record<string, string> = {
+  oil_temp: '222020',
+  ethanol: '22202B',
+};
+
+export function normalizeHeader(h: string | undefined): string | undefined {
+  const clean = (h || '').replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  return clean.length === 3 || clean.length === 8 ? clean : undefined; // 11-bit or 29-bit CAN header
+}
+
 export const DEFAULT_PIDS: PidConfigItem[] = [
   {
     id: 'rpm',
@@ -132,14 +143,14 @@ export const DEFAULT_PIDS: PidConfigItem[] = [
   {
     id: 'oil_temp',
     name: 'Oil Temperature',
-    command: '222020',
+    command: '015C',
     enabled: true,
     category: 'b58',
-    description: 'BMW DME Mode 22 Oil Temp (Editable to 015C for standard OBD2)',
+    description: 'Engine Oil Temp - standard OBD2 PID 015C (A - 40). Used because the B58 Mode 22 DID is unverified.',
     unit: '°C',
     imperialUnit: '°F',
-    expectedHeader: '62 20 20',
-    formula: 'temp_offset_48',
+    expectedHeader: '41 5C',
+    formula: 'temp_offset_40',
     min: 40,
     max: 140,
     imperialMin: 100,
@@ -154,12 +165,12 @@ export const DEFAULT_PIDS: PidConfigItem[] = [
   {
     id: 'ethanol',
     name: 'Ethanol Content',
-    command: '22202B',
+    command: '0152',
     enabled: true,
     category: 'b58',
-    description: 'Flex Fuel / DME Ethanol Percentage (Editable to 0152)',
+    description: 'Ethanol Fuel % - standard OBD2 PID 0152 (A * 100 / 255). Only present if the ECU reports it.',
     unit: '%',
-    expectedHeader: '62 20 2B',
+    expectedHeader: '41 52',
     formula: 'percent_255',
     min: 0,
     max: 100,
@@ -172,10 +183,11 @@ export const DEFAULT_PIDS: PidConfigItem[] = [
     command: '222026',
     enabled: true,
     category: 'b58',
-    description: 'BMW DME Engine Oil Pressure (Editable to 015E)',
+    description: 'BMW DME Mode 22 Oil Pressure. UNVERIFIED DID - no standard OBD2 PID exists (015E is fuel rate, not oil pressure).',
     unit: 'Bar',
     imperialUnit: 'PSI',
     expectedHeader: '62 20 26',
+    header: '7E0',
     formula: 'oil_pressure_b58',
     min: 0,
     max: 7,
@@ -443,6 +455,7 @@ export const DEFAULT_PIDS: PidConfigItem[] = [
     id: 'charge_air_temp',
     name: 'Charge Air Temp (Post-IC)',
     command: '222030',
+    header: '7E0',
     enabled: true,
     category: 'b58',
     description: 'BMW DME Post-Intercooler Charge Air Temp (Mode 22)',
@@ -465,6 +478,7 @@ export const DEFAULT_PIDS: PidConfigItem[] = [
     id: 'trans_temp',
     name: 'Transmission Fluid Temp',
     command: '222035',
+    header: '7E0',
     enabled: true,
     category: 'b58',
     description: 'BMW ZF8 / Gearbox Oil Temperature (Mode 22)',
@@ -622,6 +636,17 @@ class PidConfigService {
       for (const def of DEFAULT_PIDS) {
         const existing = storedById.get(def.id);
         if (existing) {
+          // Migrate untouched legacy defaults (unverified Mode 22 DIDs) to the working standard PIDs
+          const legacy = LEGACY_DEFAULT_COMMANDS[def.id];
+          if (legacy && normalizeCommand(existing.command) === legacy) {
+            merged.push({ ...existing, ...def, enabled: existing.enabled, pollRate: 'fast' });
+            storedById.delete(def.id);
+            continue;
+          }
+          // Mode 22 PIDs saved before header support: add the default header
+          if (def.header && existing.header === undefined && normalizeCommand(existing.command) === def.command) {
+            existing.header = def.header;
+          }
           // Ensure Core 8 PIDs default to fast polling so Oil Temp & Ethanol are never starved
           const forceFast =
             ['coolant', 'iat', 'oil_temp', 'ethanol'].includes(def.id) &&
@@ -687,9 +712,11 @@ class PidConfigService {
       if (p.id !== id) return p;
       const nextCommand = updates.command !== undefined ? normalizeCommand(updates.command) : p.command;
       const nextExpected = updates.command !== undefined ? computeExpectedHeader(nextCommand) : p.expectedHeader;
+      const nextHeader = updates.header !== undefined ? normalizeHeader(updates.header) : p.header;
       return {
         ...p,
         ...updates,
+        header: nextHeader,
         command: nextCommand || p.command,
         expectedHeader: nextExpected,
       };
@@ -704,6 +731,7 @@ class PidConfigService {
       ...input,
       id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       command: cleanCmd,
+      header: normalizeHeader(input.header),
       expectedHeader: computeExpectedHeader(cleanCmd),
       isCustom: true,
     };

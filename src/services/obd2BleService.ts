@@ -1,5 +1,5 @@
 import { ConnectionState, ObdStreamPayload, ObdTelemetry, LogEntry, PidConfigItem } from '../types';
-import { pidConfigService, computeExpectedHexPrefix, normalizeCommand } from './pidConfigService';
+import { pidConfigService, computeExpectedHexPrefix, normalizeCommand, normalizeHeader } from './pidConfigService';
 
 export const KNOWN_BLE_SERVICES = [
   '0000fff0-0000-1000-8000-00805f9b34fb', // Standard FFF0 (Vgate, cheap ELM327)
@@ -98,6 +98,10 @@ export class Obd2BleService {
   private pidFailureCounts: Map<string, number> = new Map();
   private pidBackoffUntil: Map<string, number> = new Map();
   private slowPidCursor = 0;
+  private currentHeader = '7DF'; // ELM327 default after ATZ (functional broadcast)
+  private supportedMode01: Set<string> | null = null; // PIDs the ECU says it supports (null = unknown)
+  private supportedMax = 0; // highest Mode 01 PID covered by the discovery bitmaps
+  private pidNoticeLogged: Set<string> = new Set();
 
   constructor() {
     pidConfigService.subscribe(() => {
@@ -114,6 +118,8 @@ export class Obd2BleService {
   private resetPollingCounters(): void {
     this.pollCount = 0;
     this.awaitingPrompt = false;
+    this.currentHeader = '7DF';
+    this.pidNoticeLogged.clear();
     this.resetPidBackoff();
   }
 
@@ -432,6 +438,9 @@ export class Obd2BleService {
       const test0100 = await this.sendCommand('0100', 2000).catch(() => 'NO DATA');
       this.log('rx', `0100 -> ${test0100.replace(/>/g, '').trim()}`);
 
+      // 8b. Discover which Mode 01 PIDs this ECU actually supports
+      await this.discoverSupportedPids(test0100);
+
       // 9. Query protocol description
       const dpn = await this.sendCommand('ATDPN').catch(() => '');
       if (dpn) {
@@ -496,6 +505,8 @@ export class Obd2BleService {
         }
 
         let activeBatch = [...eligibleFast, ...slowBatch];
+        // Group PIDs by CAN header so ATSH only changes once per cycle
+        activeBatch.sort((a, b) => Number(!!normalizeHeader(a.header)) - Number(!!normalizeHeader(b.header)));
         if (activeBatch.length === 0 && enabledPids.length > 0) {
           this.resetPidBackoff();
           activeBatch = fastPids.length > 0 ? fastPids : enabledPids.slice(0, 4);
@@ -534,6 +545,91 @@ export class Obd2BleService {
     }
   }
 
+  /**
+   * Read the Mode 01 "supported PIDs" bitmaps (0100, 0120, 0140, 0160...) so the app knows
+   * which standard PIDs (e.g. 015C oil temp, 0152 ethanol) the ECU really supports.
+   */
+  private async discoverSupportedPids(firstReply: string): Promise<void> {
+    const supported = new Set<string>();
+    let max = 0;
+    try {
+      for (let base = 0x00; base <= 0x60; base += 0x20) {
+        const cmd = '01' + base.toString(16).toUpperCase().padStart(2, '0');
+        const raw = base === 0 ? firstReply : await this.sendCommand(cmd, 2000);
+        const prefix = '41' + cmd.slice(2);
+        let bits = 0n;
+        let found = false;
+        for (const line of raw.split(/[\r\n]+/)) {
+          const l = line.replace(/[>\s]/g, '').toUpperCase();
+          const i = l.indexOf(prefix);
+          const hex = i >= 0 ? l.slice(i + prefix.length, i + prefix.length + 8) : '';
+          if (/^[0-9A-F]{8}$/.test(hex)) {
+            bits |= BigInt('0x' + hex); // union across ECUs
+            found = true;
+          }
+        }
+        if (!found) break;
+        max = base + 0x20;
+        for (let n = 1; n <= 32; n++) {
+          if ((bits >> BigInt(32 - n)) & 1n) {
+            supported.add((base + n).toString(16).toUpperCase().padStart(2, '0'));
+          }
+        }
+        if (!supported.has((base + 0x20).toString(16).toUpperCase().padStart(2, '0'))) break; // no further ranges
+      }
+    } catch {
+      // discovery is best-effort
+    }
+    if (supported.size > 0) {
+      this.supportedMode01 = supported;
+      this.supportedMax = max;
+      this.log('info', `ECU reports ${supported.size} supported Mode 01 PIDs: ${[...supported].sort().join(' ')}`);
+      const notes = [
+        ['5C', 'Oil temp'],
+        ['52', 'Ethanol %'],
+      ].map(([pid, name]) => `${name} (01${pid}): ${supported.has(pid) ? 'SUPPORTED' : 'not supported'}`);
+      this.log('info', notes.join(' | '));
+    } else {
+      this.supportedMode01 = null;
+      this.log('info', 'Could not read the supported-PID list; polling every enabled PID.');
+    }
+  }
+
+  /** Switch the CAN request header (ATSH) if the PID needs a different one than the last command. */
+  private async ensureHeader(pid: PidConfigItem): Promise<void> {
+    const want = normalizeHeader(pid.header) || '7DF';
+    if (want === this.currentHeader) return;
+    const reply = await this.sendCommand(`ATSH ${want}`, 1000);
+    if (/OK/i.test(reply)) {
+      this.currentHeader = want;
+    } else {
+      this.log('error', `ATSH ${want} rejected: ${reply.replace(/[>\r\n]/g, ' ').trim()}`);
+    }
+  }
+
+  private noticeOnce(key: string, type: LogEntry['type'], text: string): void {
+    if (this.pidNoticeLogged.has(key)) return;
+    this.pidNoticeLogged.add(key);
+    this.log(type, text);
+  }
+
+  private explainNegativeReply(pid: PidConfigItem, cmd: string, clean: string): boolean {
+    const m = clean.match(new RegExp('7F' + cmd.slice(0, 2) + '([0-9A-F]{2})'));
+    if (!m) return false;
+    const reasons: Record<string, string> = {
+      '11': 'service not supported by this ECU',
+      '12': 'sub-function not supported',
+      '13': 'incorrect message length',
+      '22': 'conditions not correct (engine state)',
+      '31': 'PID/DID not supported by this ECU - the code is wrong for this car',
+      '33': 'security access denied',
+      '78': 'response pending',
+    };
+    this.noticeOnce(`nrc-${pid.id}-${m[1]}`, 'error',
+      `${cmd} (${pid.name}): ECU refused with 7F ${cmd.slice(0, 2)} ${m[1]} - ${reasons[m[1]] || 'negative response'}. Header used: ${this.currentHeader}.`);
+    return true;
+  }
+
   private recordPidFailure(pid: PidConfigItem, cmd: string): void {
     const fails = (this.pidFailureCounts.get(pid.id) ?? 0) + 1;
     this.pidFailureCounts.set(pid.id, fails);
@@ -548,12 +644,28 @@ export class Obd2BleService {
     const cmd = normalizeCommand(pid.command);
     if (!cmd || cmd.length < 2) return;
 
+    // Skip standard PIDs the ECU says it does not support (saves time, explains the zero gauge)
+    if (this.supportedMode01 && cmd.startsWith('01') && cmd.length === 4) {
+      const n = parseInt(cmd.slice(2), 16);
+      if (n <= this.supportedMax && !this.supportedMode01.has(cmd.slice(2))) {
+        this.noticeOnce(`unsup-${cmd}`, 'info',
+          `${cmd} (${pid.name}) is not supported by this ECU - skipping. Change the PID in PID Settings.`);
+        return;
+      }
+    }
+
     try {
+      await this.ensureHeader(pid);
       const timeout = cmd.startsWith('22') ? 1200 : 800;
       const raw = await this.sendCommand(cmd, timeout);
       const clean = raw.replace(/[>\r\n\s]/g, '').toUpperCase();
       this.rawResponses[cmd] = raw.replace(/[>\r\n]/g, ' ').trim();
       this.log('rx', `${cmd} -> ${this.rawResponses[cmd]}`);
+
+      if (this.explainNegativeReply(pid, cmd, clean)) {
+        this.recordPidFailure(pid, cmd);
+        return;
+      }
 
       if (
         !clean ||
@@ -563,6 +675,10 @@ export class Obd2BleService {
         clean.includes('STOPPED') ||
         clean.includes('?')
       ) {
+        if (cmd.startsWith('22')) {
+          this.noticeOnce(`nodata-${cmd}`, 'error',
+            `${cmd} (${pid.name}): no usable reply (${clean || 'empty'}) with header ${this.currentHeader}. Check the DID and header in PID Settings.`);
+        }
         this.recordPidFailure(pid, cmd);
         return;
       }

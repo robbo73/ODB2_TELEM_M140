@@ -22,8 +22,12 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
     { label: '010C (RPM)', cmd: '010C' },
     { label: '010D (Speed)', cmd: '010D' },
     { label: '010B (MAP)', cmd: '010B' },
-    { label: '222020 (B58 Oil)', cmd: '222020' },
-    { label: '22202B (Ethanol)', cmd: '22202B' },
+    { label: '0100 (Supported PIDs)', cmd: '0100' },
+    { label: '0140 (Supported 41-60)', cmd: '0140' },
+    { label: '015C (Oil Temp)', cmd: '015C' },
+    { label: '0152 (Ethanol)', cmd: '0152' },
+    { label: 'ATSH 7E0 (DME header)', cmd: 'ATSH 7E0' },
+    { label: 'ATSH 7DF (Broadcast)', cmd: 'ATSH 7DF' },
   ];
 
   // Keep scroll strictly INSIDE the terminal container - do NOT scroll the main window/page

@@ -36,10 +36,10 @@ export interface ObdTelemetry {
   coolantTempF: number;     // °F
   iatC: number;             // Intake Air Temp °C (010F)
   iatF: number;             // Intake Air Temp °F
-  b58OilTempC: number;      // BMW B58 Oil Temp °C (PID 222020 / 015C)
+  b58OilTempC: number;      // BMW B58 Oil Temp °C (PID 015C, or Mode 22 DID)
   b58OilTempF: number;      // BMW B58 Oil Temp °F
-  ethanolPct: number;       // Ethanol % (PID 22202B / 0152)
-  oilPressureBar: number;   // Engine Oil Pressure in Bar (PID 222026 / 015E)
+  ethanolPct: number;       // Ethanol % (PID 0152, or Mode 22 DID)
+  oilPressureBar: number;   // Engine Oil Pressure in Bar (Mode 22 DID; no standard OBD2 PID)
   oilPressurePsi: number;   // Engine Oil Pressure in PSI
   // Extended Standard Mode 01 & BMW B58 Mode 22 PIDs
   engineLoadPct: number;    // Calculated Engine Load % (0104)
@@ -141,6 +141,8 @@ export interface PidConfigItem {
   unit: string;
   imperialUnit?: string;
   expectedHeader: string;
+  /** CAN request header for this PID (ATSH). Omit for the standard functional broadcast 7DF. BMW DME Mode 22 uses 7E0. */
+  header?: string;
   formula: PidFormulaId;
   customExpression?: string;
   min: number;
