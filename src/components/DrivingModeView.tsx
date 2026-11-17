@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ObdTelemetry, ObdStreamPayload, LogSession } from '../types';
 import { dataLoggingService } from '../services/dataLoggingService';
+import { pidConfigService } from '../services/pidConfigService';
 
 interface DrivingModeViewProps {
   telemetry: ObdTelemetry;
@@ -278,7 +279,7 @@ export const DrivingModeView: React.FC<DrivingModeViewProps> = ({
               </span>
             </div>
             <span className="text-[8px] sm:text-[9px] px-1 py-0.2 rounded bg-zinc-900/80 border border-zinc-800 text-amber-500/80 shrink-0">
-              222020
+              {pidConfigService.getPids().find((p) => p.id === 'oil_temp')?.command ?? '222020'}
             </span>
           </div>
 
@@ -317,7 +318,7 @@ export const DrivingModeView: React.FC<DrivingModeViewProps> = ({
               </span>
             </div>
             <span className="text-[8px] sm:text-[9px] px-1 py-0.2 rounded bg-zinc-900/80 border border-zinc-800 text-emerald-500/80 shrink-0">
-              22202B
+              {pidConfigService.getPids().find((p) => p.id === 'ethanol')?.command ?? '22202B'}
             </span>
           </div>
 
@@ -422,7 +423,7 @@ export const DrivingModeView: React.FC<DrivingModeViewProps> = ({
               </span>
             </div>
             <span className="text-[8px] sm:text-[9px] px-1 py-0.2 rounded bg-zinc-900/80 border border-zinc-800 text-rose-500/80 shrink-0">
-              222026
+              {pidConfigService.getPids().find((p) => p.id === 'oil_pressure')?.command ?? '222026'}
             </span>
           </div>
 

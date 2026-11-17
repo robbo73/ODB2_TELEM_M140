@@ -28,6 +28,7 @@ interface PidConfigModalProps {
 interface EditDraft {
   name: string;
   command: string;
+  header: string;
   category: 'standard' | 'b58';
   unit: string;
   description: string;
@@ -44,6 +45,7 @@ interface EditDraft {
 const emptyNewDraft = (): EditDraft => ({
   name: '',
   command: '',
+  header: '',
   category: 'b58',
   unit: '',
   description: 'Custom OBD2 / Mode 22 PID',
@@ -103,6 +105,7 @@ export const PidConfigModal: React.FC<PidConfigModalProps> = ({
     setEditDraft({
       name: item.name,
       command: item.command,
+      header: item.header || '',
       category: item.category,
       unit: item.unit,
       description: item.description,
@@ -153,18 +156,21 @@ export const PidConfigModal: React.FC<PidConfigModalProps> = ({
     } else if (clean === '222026') {
       nextFormula = 'oil_pressure_b58';
       nextCategory = 'b58';
-    } else if (clean === '015E') {
-      nextFormula = 'oil_pressure_b58';
-      nextCategory = 'standard';
     } else if (clean.startsWith('01')) {
       nextCategory = 'standard';
     } else if (clean.startsWith('22')) {
       nextCategory = 'b58';
     }
 
+    // Mode 22 (BMW DME) is normally addressed to 7E0; Mode 01 uses the broadcast default
+    let nextHeader = editDraft.header;
+    if (clean.startsWith('22') && !nextHeader) nextHeader = '7E0';
+    if (clean.startsWith('01') && nextHeader === '7E0') nextHeader = '';
+
     setEditDraft({
       ...editDraft,
       command: nextCmd,
+      header: nextHeader,
       formula: nextFormula,
       category: nextCategory,
     });
@@ -190,6 +196,7 @@ export const PidConfigModal: React.FC<PidConfigModalProps> = ({
     pidConfigService.updatePid(id, {
       name: editDraft.name.trim(),
       command: normalizeCommand(editDraft.command),
+      header: editDraft.header.trim() === '' ? '' : editDraft.header,
       category: editDraft.category,
       unit: editDraft.unit.trim() || 'raw',
       description: editDraft.description.trim(),
@@ -236,6 +243,7 @@ export const PidConfigModal: React.FC<PidConfigModalProps> = ({
     pidConfigService.addCustomPid({
       name: newDraft.name.trim(),
       command: normalizeCommand(newDraft.command),
+      header: newDraft.header.trim() || (normalizeCommand(newDraft.command).startsWith('22') ? '7E0' : undefined),
       enabled: true,
       category: newDraft.category,
       description: newDraft.description.trim() || 'Custom user-defined PID',
@@ -697,6 +705,18 @@ export const PidConfigModal: React.FC<PidConfigModalProps> = ({
                               <option value="standard">Standard (Mode 01)</option>
                               <option value="b58">BMW B58 (Mode 22)</option>
                             </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] text-zinc-400 uppercase mb-1">CAN Header (optional)</label>
+                            <input
+                              type="text"
+                              value={editDraft.header}
+                              onChange={(e) => setEditDraft({ ...editDraft, header: e.target.value.toUpperCase() })}
+                              placeholder="blank = 7DF, DME = 7E0"
+                              className="w-full px-2.5 py-1.5 bg-zinc-950 border border-zinc-700 focus:border-cyan-500 rounded-sm text-xs text-white font-mono focus:outline-none"
+                            />
+                            <span className="text-[10px] text-zinc-500 mt-0.5 block">Mode 22 usually needs 7E0</span>
                           </div>
 
                           <div className="sm:col-span-2">
