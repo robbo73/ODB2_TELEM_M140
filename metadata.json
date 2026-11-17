@@ -1,0 +1,6 @@
+{
+  "name": "OBD2 Web Bluetooth Scanner & Gemini Performance Tuner",
+  "description": "Industrial Web Bluetooth OBD2 dashboard and logger for ELM327 BLE dongles. Continuously polls standard PIDs and BMW B58 Mode 22 PIDs (Oil Temp, Oil Pressure, Ethanol content), provides high-frequency IndexedDB logging, full Driving Mode, and AI Drive Log Performance Tuner powered by Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
