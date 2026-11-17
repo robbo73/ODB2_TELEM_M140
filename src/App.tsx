@@ -46,6 +46,24 @@ import { LogSessionsModal } from './components/LogSessionsModal';
 import { DrivingModeView } from './components/DrivingModeView';
 import { AiTuningConsoleModal } from './components/AiTuningConsoleModal';
 
+const MAX_LOG_ENTRIES = 3000;
+
+/** Append a log entry; when over the cap, drop the oldest TX/RX chatter first so errors/system messages survive. */
+function appendLog(prev: LogEntry[], entry: LogEntry): LogEntry[] {
+  const next = [...prev, entry];
+  const over = next.length - MAX_LOG_ENTRIES;
+  if (over <= 0) return next;
+  let removed = 0;
+  const trimmed = next.filter((e) => {
+    if (removed < over && (e.type === 'tx' || e.type === 'rx')) {
+      removed++;
+      return false;
+    }
+    return true;
+  });
+  return trimmed.length > MAX_LOG_ENTRIES ? trimmed.slice(-MAX_LOG_ENTRIES) : trimmed;
+}
+
 export default function App() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [telemetry, setTelemetry] = useState<ObdTelemetry>(obd2Service.getTelemetry());
@@ -108,7 +126,7 @@ export default function App() {
         dataLoggingService.recordPayload(payload);
       },
       (logEntry) => {
-        setLogs((prev) => [...prev.slice(-150), logEntry]);
+        setLogs((prev) => appendLog(prev, logEntry));
       }
     );
 
@@ -152,15 +170,14 @@ export default function App() {
   }, []);
 
   const handleAddLogEntry = useCallback((type: LogEntry['type'], text: string) => {
-    setLogs((prev) => [
-      ...prev.slice(-150),
-      {
+    setLogs((prev) =>
+      appendLog(prev, {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         timestamp: Date.now(),
         type,
         text,
-      },
-    ]);
+      })
+    );
   }, []);
 
   const handleOpenPidEditor = useCallback((pidId: string | null = null) => {

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, Send, Trash2, ArrowDownCircle, Check, Search } from 'lucide-react';
+import { Terminal, Send, Trash2, Pause, Play, Search, X } from 'lucide-react';
 import { LogEntry } from '../types';
 import { obd2Service } from '../services/obd2BleService';
 
@@ -8,10 +8,17 @@ interface TerminalConsoleProps {
   onClearLogs: () => void;
 }
 
+type LogCategory = 'tx' | 'rx' | 'sys' | 'error';
+const categoryOf = (t: LogEntry['type']): LogCategory => (t === 'tx' ? 'tx' : t === 'rx' ? 'rx' : t === 'error' ? 'error' : 'sys');
+const MAX_VISIBLE_ROWS = 500; // keep the DOM light even when the buffer holds thousands of lines
+
 export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearLogs }) => {
   const [customCommand, setCustomCommand] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
-  const [filter, setFilter] = useState<'all' | 'tx_rx' | 'error'>('all');
+  const [typeFilter, setTypeFilter] = useState<Record<LogCategory, boolean>>({ tx: true, rx: true, sys: true, error: true });
+  const [query, setQuery] = useState('');
+  // Pause = freeze what is shown; new lines keep being collected underneath and appear on Resume.
+  const [frozenLogs, setFrozenLogs] = useState<LogEntry[] | null>(null);
   const [isSending, setIsSending] = useState(false);
   const logContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -30,12 +37,39 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
     { label: 'ATSH 7DF (Broadcast)', cmd: 'ATSH 7DF' },
   ];
 
+  const paused = frozenLogs !== null;
+  const sourceLogs = frozenLogs ?? logs;
+
+  const q = query.trim().toLowerCase();
+  const matched = sourceLogs.filter(
+    (log) => typeFilter[categoryOf(log.type)] && (q === '' || log.text.toLowerCase().includes(q))
+  );
+  const filteredLogs = matched.length > MAX_VISIBLE_ROWS ? matched.slice(-MAX_VISIBLE_ROWS) : matched;
+
+  const counts: Record<LogCategory, number> = { tx: 0, rx: 0, sys: 0, error: 0 };
+  for (const log of sourceLogs) counts[categoryOf(log.type)]++;
+
+  // How many lines arrived while paused
+  let newWhilePaused = 0;
+  if (frozenLogs) {
+    const last = frozenLogs[frozenLogs.length - 1];
+    const idx = last ? logs.findIndex((l) => l.id === last.id) : -1;
+    newWhilePaused = idx >= 0 ? logs.length - 1 - idx : logs.length;
+  }
+
   // Keep scroll strictly INSIDE the terminal container - do NOT scroll the main window/page
   useEffect(() => {
-    if (autoScroll && logContainerRef.current) {
+    if (autoScroll && !paused && logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [logs, autoScroll]);
+  }, [filteredLogs.length, autoScroll, paused]);
+
+  const togglePause = () => setFrozenLogs((cur) => (cur ? null : logs));
+  const handleClear = () => {
+    onClearLogs();
+    if (frozenLogs) setFrozenLogs([]);
+  };
+  const toggleCategory = (c: LogCategory) => setTypeFilter((f) => ({ ...f, [c]: !f[c] }));
 
   const handleSendCommand = async (cmdToSend?: string) => {
     const cmd = (cmdToSend || customCommand).trim();
@@ -52,12 +86,6 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
       if (!cmdToSend) setCustomCommand('');
     }
   };
-
-  const filteredLogs = logs.filter((log) => {
-    if (filter === 'tx_rx') return log.type === 'tx' || log.type === 'rx';
-    if (filter === 'error') return log.type === 'error';
-    return true;
-  });
 
   return (
     <div id="terminal-console" className="bg-zinc-900/40 border border-zinc-800 rounded-sm p-5 sm:p-6">
@@ -77,8 +105,21 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
           </div>
         </div>
 
-        {/* Filter, Auto-Scroll and Clear Buttons */}
+        {/* Pause, Auto-Scroll and Clear Buttons */}
         <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            onClick={togglePause}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-sm text-[10px] font-mono font-bold uppercase tracking-wider border transition-all cursor-pointer ${
+              paused
+                ? 'bg-amber-950/60 text-amber-300 border-amber-700/80'
+                : 'bg-zinc-950 text-zinc-300 border-zinc-800 hover:text-white'
+            }`}
+            title={paused ? 'Resume live output' : 'Freeze the display (new lines keep being collected)'}
+          >
+            {paused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
+            {paused ? `Resume${newWhilePaused > 0 ? ` (+${newWhilePaused})` : ''}` : 'Pause'}
+          </button>
+
           <button
             onClick={() => setAutoScroll(!autoScroll)}
             className={`px-2 py-1 rounded-sm text-[10px] font-mono font-bold uppercase tracking-wider border transition-all cursor-pointer ${
@@ -86,46 +127,69 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
                 ? 'bg-cyan-950/60 text-cyan-400 border-cyan-800/80'
                 : 'bg-zinc-950 text-zinc-500 border-zinc-800 hover:text-zinc-300'
             }`}
-            title={autoScroll ? 'Auto-scroll is ON' : 'Auto-scroll is PAUSED'}
+            title={autoScroll ? 'Auto-scroll is ON' : 'Auto-scroll is OFF'}
           >
-            Auto-Scroll: {autoScroll ? 'ON' : 'PAUSED'}
+            Auto-Scroll: {autoScroll ? 'ON' : 'OFF'}
           </button>
 
-          <div className="flex bg-zinc-950 p-1 rounded-sm border border-zinc-800 text-xs font-mono">
-            <button
-              onClick={() => setFilter('all')}
-              className={`px-2.5 py-1 rounded-sm transition-all cursor-pointer uppercase font-bold text-[10px] tracking-wider ${
-                filter === 'all' ? 'bg-zinc-900 text-cyan-400 border border-zinc-700' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              All
-            </button>
-            <button
-              onClick={() => setFilter('tx_rx')}
-              className={`px-2.5 py-1 rounded-sm transition-all cursor-pointer uppercase font-bold text-[10px] tracking-wider ${
-                filter === 'tx_rx' ? 'bg-zinc-900 text-cyan-400 border border-zinc-700' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              TX / RX
-            </button>
-            <button
-              onClick={() => setFilter('error')}
-              className={`px-2.5 py-1 rounded-sm transition-all cursor-pointer uppercase font-bold text-[10px] tracking-wider ${
-                filter === 'error' ? 'bg-zinc-900 text-rose-400 border border-zinc-700' : 'text-zinc-500 hover:text-zinc-300'
-              }`}
-            >
-              Errors
-            </button>
-          </div>
-
           <button
-            onClick={onClearLogs}
+            onClick={handleClear}
             title="Clear Console"
             className="p-1.5 rounded-sm bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 text-zinc-500 hover:text-zinc-300 transition-all cursor-pointer"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
+      </div>
+
+      {/* Filters: toggle message types and search the text */}
+      <div className="mt-4 flex flex-col sm:flex-row sm:items-center gap-2">
+        <div className="flex bg-zinc-950 p-1 rounded-sm border border-zinc-800 text-xs font-mono">
+          {([
+            ['tx', 'TX', 'text-cyan-400'],
+            ['rx', 'RX', 'text-emerald-400'],
+            ['sys', 'SYS', 'text-amber-400'],
+            ['error', 'ERR', 'text-rose-400'],
+          ] as Array<[LogCategory, string, string]>).map(([cat, label, color]) => (
+            <button
+              key={cat}
+              onClick={() => toggleCategory(cat)}
+              aria-pressed={typeFilter[cat]}
+              title={`${typeFilter[cat] ? 'Hide' : 'Show'} ${label} messages`}
+              className={`px-2.5 py-1 rounded-sm transition-all cursor-pointer uppercase font-bold text-[10px] tracking-wider ${
+                typeFilter[cat] ? `bg-zinc-900 ${color} border border-zinc-700` : 'text-zinc-600 line-through hover:text-zinc-400'
+              }`}
+            >
+              {label} <span className="text-zinc-500 font-normal">{counts[cat]}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="relative flex-1">
+          <Search className="w-3 h-3 text-zinc-600 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search log text (e.g. 015C, NO DATA, 7F)..."
+            className="w-full bg-zinc-950 border border-zinc-800 focus:border-cyan-500 rounded-sm pl-7 pr-7 py-1.5 text-xs font-mono text-white placeholder:text-zinc-600 outline-none"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery('')}
+              title="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        <span className="text-[10px] font-mono text-zinc-500 whitespace-nowrap">
+          {matched.length === sourceLogs.length ? `${sourceLogs.length} lines` : `${matched.length} of ${sourceLogs.length}`}
+          {matched.length > MAX_VISIBLE_ROWS ? ` (last ${MAX_VISIBLE_ROWS})` : ''}
+          {paused ? ' - PAUSED' : ''}
+        </span>
       </div>
 
       {/* Quick Command Buttons */}
@@ -153,7 +217,7 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
         <div className="absolute top-2 right-4 text-[9px] text-zinc-600 select-none">SYSTEM_LOG</div>
         {filteredLogs.length === 0 ? (
           <div className="text-center py-16 text-zinc-600 uppercase tracking-widest font-mono text-xs">
-            Console idle. Send command or start polling.
+            {sourceLogs.length === 0 ? 'Console idle. Send command or start polling.' : 'No lines match the current filters.'}
           </div>
         ) : (
           filteredLogs.map((log) => {
@@ -180,7 +244,7 @@ export const TerminalConsole: React.FC<TerminalConsoleProps> = ({ logs, onClearL
                 {log.type === 'error' && (
                   <span className="text-rose-400 font-bold shrink-0">[ERR]</span>
                 )}
-                {log.type === 'info' && (
+                {categoryOf(log.type) === 'sys' && (
                   <span className="text-amber-500/90 font-bold shrink-0">[SYS]</span>
                 )}
 
